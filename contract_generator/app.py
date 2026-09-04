@@ -372,8 +372,10 @@ class ContractGeneratorApp:
         try:
             for key, row in self.rows.items():
                 row.set_value(card.get(key))
-            if card.get("contract_number"):
-                self.contract_number.set(card.get("contract_number"))
+            # Номер договора синхронизируется БЕЗУСЛОВНО. Если новая карточка
+            # его не содержит, поле очищается: номер из предыдущей карточки
+            # не должен попасть в договор другой компании.
+            self.contract_number.set(card.get("contract_number") or "")
         finally:
             self._suspend_validation = False
 

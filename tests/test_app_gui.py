@@ -376,3 +376,154 @@ def test_close_cancels_pending_validation(app, make_xlsx, base_rows):
     app._on_close()
 
     assert app._validation_job is None
+
+
+# --- последовательная загрузка нескольких карточек ------------------------
+#
+# Регрессия: раньше номер договора записывался в поле только при непустом
+# значении в новой карточке, поэтому номер предыдущей компании оставался
+# в интерфейсе и мог попасть в чужой договор.
+
+def _rows_without(base_rows, label):
+    return [row for row in base_rows if row[0] != label]
+
+
+def _rows_with_number(base_rows, number):
+    return [
+        ["Номер договора", number] if row[0] == "Номер договора" else row
+        for row in base_rows
+    ]
+
+
+def test_second_card_without_number_clears_the_input(
+    app, make_xlsx, base_rows, make_docx
+):
+    """Карточка без номера обнуляет поле, а не оставляет прежнее значение."""
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+
+    first = make_xlsx(_rows_with_number(base_rows, "Д-001"), name="first.xlsx")
+    app._load_card(str(first))
+    flush(app)
+    assert app.contract_number.get() == "Д-001"
+
+    second = make_xlsx(
+        _rows_without(base_rows, "Номер договора"), name="second.xlsx"
+    )
+    app._load_card(str(second))
+    flush(app)
+
+    assert app.contract_number.get() == ""
+    assert app.card.get("contract_number") == ""
+    # Номер обязателен всегда, поэтому генерация остаётся заблокированной.
+    assert str(app.generate_button["state"]) == "disabled"
+    assert any(
+        i.field == "contract_number" for i in app.last_validation.errors
+    )
+
+
+def test_second_card_with_whitespace_number_does_not_keep_the_old_one(
+    app, make_xlsx, base_rows, make_docx
+):
+    """Номер из одних пробелов считается пустым и не наследуется."""
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+
+    first = make_xlsx(_rows_with_number(base_rows, "Д-001"), name="first.xlsx")
+    app._load_card(str(first))
+    flush(app)
+    assert app.contract_number.get() == "Д-001"
+
+    second = make_xlsx(_rows_with_number(base_rows, "   "), name="second.xlsx")
+    app._load_card(str(second))
+    flush(app)
+
+    assert "Д-001" not in app.contract_number.get()
+    assert app.contract_number.get().strip() == ""
+    assert app.card.get("contract_number").strip() == ""
+    assert str(app.generate_button["state"]) == "disabled"
+    assert any(
+        i.field == "contract_number" for i in app.last_validation.errors
+    )
+
+
+def test_second_card_number_replaces_the_first(app, make_xlsx, base_rows, make_docx):
+    """Номер второй карточки вытесняет номер первой."""
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+
+    first = make_xlsx(_rows_with_number(base_rows, "Д-001"), name="first.xlsx")
+    app._load_card(str(first))
+    flush(app)
+    assert app.contract_number.get() == "Д-001"
+
+    second = make_xlsx(_rows_with_number(base_rows, "Д-002"), name="second.xlsx")
+    app._load_card(str(second))
+    flush(app)
+
+    assert app.contract_number.get() == "Д-002"
+    assert app.card.get("contract_number") == "Д-002"
+    assert str(app.generate_button["state"]) == "normal"
+
+
+def test_manual_number_is_overwritten_by_the_next_card(
+    app, make_xlsx, base_rows, make_docx
+):
+    """Введённый вручную номер не переживает загрузку другой карточки."""
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+
+    app._load_card(str(make_xlsx(base_rows, name="first.xlsx")))
+    app.contract_number.set("РУЧНОЙ-999")
+    flush(app)
+
+    second = make_xlsx(
+        _rows_without(base_rows, "Номер договора"), name="second.xlsx"
+    )
+    app._load_card(str(second))
+    flush(app)
+
+    assert app.contract_number.get() == ""
+
+
+def test_stale_number_never_reaches_the_document(
+    app, make_xlsx, base_rows, make_docx, tmp_path, monkeypatch
+):
+    """Сквозная проверка: номер первой компании не попадает во второй договор."""
+    from conftest import docx_text
+
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+    output = tmp_path / "выход"
+    output.mkdir()
+    app.output_dir.set(str(output))
+    app.add_timestamp.set(False)
+    monkeypatch.setattr(
+        "contract_generator.app.messagebox.showinfo", lambda *a, **k: None
+    )
+
+    app._load_card(str(make_xlsx(_rows_with_number(base_rows, "Д-001"),
+                                 name="first.xlsx")))
+    flush(app)
+
+    second = make_xlsx(
+        _rows_without(base_rows, "Номер договора"), name="second.xlsx"
+    )
+    app._load_card(str(second))
+    flush(app)
+
+    # Без номера генерация невозможна.
+    shown = []
+    monkeypatch.setattr(
+        "contract_generator.app.messagebox.showerror",
+        lambda *a, **k: shown.append(a),
+    )
+    app._generate()
+    assert shown, "генерация должна быть заблокирована пустым номером"
+    assert list(output.glob("*.docx")) == []
+
+    # Менеджер вводит номер второй компании — в документ попадает только он.
+    app.contract_number.set("Д-002")
+    flush(app)
+    app._generate()
+
+    created = list(output.glob("*.docx"))
+    assert len(created) == 1
+    text = docx_text(created[0])
+    assert "Д-002" in text
+    assert "Д-001" not in text

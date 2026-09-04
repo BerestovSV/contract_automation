@@ -1,0 +1,4 @@
+python-docx==1.1.0
+openpyxl==3.1.2
+typing-extensions==4.9.0
+# lxml - уже установлен, не требуется указывать версию

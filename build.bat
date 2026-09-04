@@ -1,94 +1,69 @@
 @echo off
 chcp 65001 >nul
-echo ============================================
-echo Сборка Генератора договоров B2B
-echo ============================================
-echo.
+setlocal EnableDelayedExpansion
 
-:: Проверка наличия Python
+REM ==========================================================
+REM  Сборка "Генератора договоров B2B" в один EXE-файл.
+REM  Использует локальное виртуальное окружение .venv и
+REM  НЕ устанавливает пакеты в системный Python.
+REM ==========================================================
+
+set "VENV_DIR=%~dp0.venv"
+set "PY=%VENV_DIR%\Scripts\python.exe"
+
+echo [1/6] Проверка Python...
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ОШИБКА] Python не найден!
-    echo Установите Python с https://python.org/
-    pause
+    echo [ОШИБКА] Python не найден в PATH.
+    echo Установите Python 3.11 с https://python.org/ и повторите.
     exit /b 1
 )
-
-echo Версия Python:
 python --version
-echo.
 
-echo [1/5] Обновление pip...
-python -m pip install --upgrade pip
+echo [2/6] Подготовка локального окружения .venv...
+if not exist "%PY%" (
+    python -m venv "%VENV_DIR%"
+    if errorlevel 1 (
+        echo [ОШИБКА] Не удалось создать виртуальное окружение.
+        exit /b 1
+    )
+)
 
-echo [2/5] Установка зависимостей...
-pip install -r requirements.txt
-
+echo [3/6] Установка зависимостей (только внутри .venv)...
+"%PY%" -m pip install --upgrade pip
+if errorlevel 1 exit /b 1
+"%PY%" -m pip install -r "%~dp0requirements-dev.txt"
 if errorlevel 1 (
-    echo.
-    echo [ОШИБКА] Не удалось установить зависимости!
-    pause
+    echo [ОШИБКА] Не удалось установить зависимости.
     exit /b 1
 )
 
-echo [3/5] Установка PyInstaller...
-pip install pyinstaller --upgrade
-
-echo [4/5] Создание папок...
-if not exist "templates" mkdir templates
-if not exist "data" mkdir data
-if not exist "output" mkdir output
-
-echo [5/5] Сборка приложения...
-echo Это может занять несколько минут...
-
-:: Создаем .spec файл для более тонкой настройки
-pyinstaller --onefile --windowed ^
-    --name "ContractGenerator" ^
-    --add-data "templates;templates" ^
-    --add-data "data;data" ^
-    --add-data "output;output" ^
-    --hidden-import lxml ^
-    --hidden-import lxml.etree ^
-    --hidden-import openpyxl ^
-    --hidden-import docx ^
-    --hidden-import docx.oxml ^
-    --hidden-import docx.text ^
-    --hidden-import docx.document ^
-    --hidden-import docx.table ^
-    --hidden-import docx.shared ^
-    --hidden-import docx.enum ^
-    --hidden-import docx.enum.section ^
-    --hidden-import docx.enum.style ^
-    --hidden-import docx.enum.table ^
-    --hidden-import docx.enum.text ^
-    --hidden-import typing_extensions ^
-    --collect-all openpyxl ^
-    --collect-all docx ^
-    --version-file version.txt ^
-    main.py
-
+echo [4/6] Запуск тестов...
+"%PY%" -m pytest
 if errorlevel 1 (
-    echo.
-    echo [ОШИБКА] Сборка не удалась!
-    echo.
-    echo Попробуйте альтернативный способ:
-    echo pyinstaller --onefile --windowed --name "ContractGenerator" main.py
-    echo.
-    pause
+    echo [ОШИБКА] Тесты не прошли. Сборка остановлена.
+    exit /b 1
+)
+
+echo [5/6] Очистка предыдущей сборки...
+if exist "%~dp0build" rmdir /s /q "%~dp0build"
+if exist "%~dp0dist" rmdir /s /q "%~dp0dist"
+
+echo [6/6] Сборка EXE...
+"%PY%" -m PyInstaller --noconfirm --clean "%~dp0ContractGenerator.spec"
+if errorlevel 1 (
+    echo [ОШИБКА] Сборка не удалась.
+    exit /b 1
+)
+
+if not exist "%~dp0dist\ContractGenerator.exe" (
+    echo [ОШИБКА] Файл dist\ContractGenerator.exe не создан.
     exit /b 1
 )
 
 echo.
 echo ============================================
-echo ГОТОВО!
-echo Исполняемый файл: dist\ContractGenerator.exe
-echo Размер: 
-dir dist\ContractGenerator.exe | find "ContractGenerator.exe"
+echo ГОТОВО: dist\ContractGenerator.exe
 echo ============================================
-echo.
-echo Файл готов к использованию!
-echo Вы можете скопировать его в любую папку.
-echo Не забудьте скопировать папки templates, data, output
-echo.
-pause
+dir "%~dp0dist\ContractGenerator.exe" | find "ContractGenerator.exe"
+exit /b 0

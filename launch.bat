@@ -1,10 +1,8 @@
 @echo off
-echo Запуск генератора договоров...
-python main.py
-if errorlevel 1 (
-    echo.
-    echo Ошибка запуска. Проверьте установку зависимостей:
-    echo pip install -r requirements.txt
-    echo.
-    pause
-)
+chcp 65001 >nul
+setlocal
+
+set "PY=%~dp0.venv\Scripts\pythonw.exe"
+if not exist "%PY%" set "PY=pythonw"
+
+start "" "%PY%" "%~dp0main.py"

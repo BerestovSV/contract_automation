@@ -1,0 +1,19 @@
+# Автоматически нормализовать все текстовые файлы
+* text=auto
+
+# Явно указать LF для всех текстовых файлов
+*.py text eol=lf
+*.md text eol=lf
+*.bat text eol=crlf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+*.spec text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Бинарные файлы
+*.png binary
+*.jpg binary
+*.docx binary
+*.xlsx binary

@@ -148,11 +148,34 @@ def test_case_form_placeholder_counts_as_field_use():
     assert any(i.field == "signatory_position" for i in result.errors)
 
 
-def test_inferred_gender_produces_warning_only():
+def test_inferred_gender_blocks_until_confirmed():
+    """Выведенный пол не считается подтверждённым: он блокирует генерацию."""
     result = V.validate_company_data(
         GOOD, template_placeholders=["{acting_form}"], gender_inferred=True
     )
-    assert any(i.field == "signatory_gender" and i.level == WARNING for i in result.issues)
+    assert result.is_blocked
+    assert any(i.field == "signatory_gender" and i.level == ERROR for i in result.errors)
+
+
+def test_explicit_gender_unblocks_acting_form():
+    data = dict(GOOD, signatory_gender="женский")
+    result = V.validate_company_data(
+        data, template_placeholders=["{acting_form}"], gender_inferred=False
+    )
+    assert not result.is_blocked, result.errors
+
+
+def test_unrecognised_gender_value_blocks():
+    data = dict(GOOD, signatory_gender="не знаю")
+    result = V.validate_company_data(data, template_placeholders=["{acting_form}"])
+    assert any(i.field == "signatory_gender" and i.level == ERROR for i in result.errors)
+
+
+def test_gender_not_required_when_template_does_not_use_it():
+    result = V.validate_company_data(
+        GOOD, template_placeholders=["{inn}"], gender_inferred=True
+    )
+    assert not any(i.field == "signatory_gender" for i in result.errors)
 
 
 def test_unknown_position_produces_warning():

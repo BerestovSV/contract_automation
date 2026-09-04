@@ -16,13 +16,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
 from . import fields as F
-from .contract_numbers import (
-    STATUS_OK,
-    ContractRegistry,
-    NumberFormatError,
-    generate_contract_number,
+from . import placeholders as P
+from .docx_filler import (
+    PlaceholderError,
+    TemplateError,
+    fill_template,
+    unique_path,
 )
-from .docx_filler import TemplateError, fill_template, unique_path
 from .excel_reader import ExcelReadError, read_company_card
 from .logging_setup import mask_identifier, setup_logging
 from .models import (
@@ -30,18 +30,16 @@ from .models import (
     CompanyCard,
     ValidationResult,
 )
-from .service import (
-    build_context,
-    build_output_filename,
-    template_placeholders,
-    validate_card,
-)
+from .service import build_context, build_output_filename, validate_card
 from .settings import Settings, load_settings, save_settings
 from .validation import format_result_ru
 
 logger = logging.getLogger(__name__)
 
 APP_TITLE = "Генератор договоров B2B"
+
+#: Задержка живой проверки при наборе текста, мс.
+VALIDATION_DEBOUNCE_MS = 350
 
 # Текстовые статусы вместо эмодзи.
 STATUS_OK_TEXT = "OK"
@@ -97,12 +95,12 @@ class ContractGeneratorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.settings: Settings = load_settings()
-        self.registry = ContractRegistry()
         self.card: Optional[CompanyCard] = None
         self.rows: Dict[str, FieldRow] = {}
         self.last_output: Optional[Path] = None
         self.last_validation: Optional[ValidationResult] = None
         self._suspend_validation = False
+        self._validation_job: Optional[str] = None
 
         self.template_path = tk.StringVar(value=self.settings.last_template_path)
         self.card_path = tk.StringVar()
@@ -250,13 +248,15 @@ class ContractGeneratorApp:
         number_row.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         number_row.columnconfigure(1, weight=1)
 
+        # Номер договора вводится менеджером вручную: автоматическая нумерация
+        # и проверка дубликатов сознательно не реализованы.
         ttk.Label(number_row, text="Номер договора:").grid(row=0, column=0, sticky="w")
         entry = ttk.Entry(number_row, textvariable=self.contract_number)
         entry.grid(row=0, column=1, sticky="ew", padx=8)
         self.contract_number.trace_add("write", lambda *_: self._on_field_changed())
-        ttk.Button(
-            number_row, text="Сформировать номер", command=self._generate_number
-        ).grid(row=0, column=2)
+        ttk.Label(
+            number_row, text="(вводится вручную)", foreground=COLOR_MUTED
+        ).grid(row=0, column=2, sticky="w")
 
         options = ttk.Frame(frame)
         options.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
@@ -295,6 +295,18 @@ class ContractGeneratorApp:
 
         self.status_label = ttk.Label(frame, text="Выберите шаблон и карточку компании.")
         self.status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        ttk.Label(
+            frame,
+            text=(
+                "Каждый плейсхолдер {поле} в шаблоне должен быть известен "
+                "приложению и иметь значение — иначе договор не создаётся. "
+                "Номер договора вводится вручную; уникальность номера "
+                "приложение не проверяет."
+            ),
+            foreground=COLOR_MUTED,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     def _on_wheel(self, event: tk.Event) -> None:
         self._fields_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
@@ -383,8 +395,29 @@ class ContractGeneratorApp:
         return self.card
 
     def _on_field_changed(self) -> None:
+        """Живая проверка во время набора — с небольшой задержкой.
+
+        Задержка нужна, чтобы не разбирать шаблон на каждое нажатие клавиши.
+        На безопасность это не влияет: кнопка генерации выполняет полную
+        синхронную проверку заново (см. :meth:`_generate`).
+        """
         if self._suspend_validation or self.card is None:
             return
+        self._cancel_pending_validation()
+        self._validation_job = self.root.after(
+            VALIDATION_DEBOUNCE_MS, self._run_debounced_validation
+        )
+
+    def _cancel_pending_validation(self) -> None:
+        if self._validation_job is not None:
+            try:
+                self.root.after_cancel(self._validation_job)
+            except (tk.TclError, ValueError):
+                pass
+            self._validation_job = None
+
+    def _run_debounced_validation(self) -> None:
+        self._validation_job = None
         self._refresh_state()
 
     def _validate_now(self) -> None:
@@ -474,31 +507,15 @@ class ContractGeneratorApp:
     def _set_status(self, text: str, color: str = COLOR_MUTED) -> None:
         self.status_label.configure(text=text, foreground=color)
 
-    # -- номер договора ----------------------------------------------------
-
-    def _generate_number(self) -> None:
-        try:
-            number = generate_contract_number(
-                self.registry, self.settings.number_format
-            )
-        except NumberFormatError as exc:
-            messagebox.showerror("Формат номера договора", str(exc))
-            return
-        except Exception as exc:
-            logger.exception("Не удалось сформировать номер договора")
-            messagebox.showerror(
-                "Номер договора",
-                f"Не удалось сформировать номер: {exc}\n\n"
-                "Подробности записаны в журнал.",
-            )
-            return
-        self.contract_number.set(number)
-        self._set_status(f"Сформирован номер: {number}", COLOR_OK)
-
     # -- генерация ---------------------------------------------------------
 
     def _generate(self) -> None:
-        card = self._collect_card()
+        # Никакого доверия к кэшу: перед генерацией всегда выполняется полная
+        # проверка по текущему содержимому полей и текущему шаблону.
+        self._cancel_pending_validation()
+        self._refresh_state()
+
+        card = self.card
         template = self.template_path.get().strip()
         if card is None or not template:
             return
@@ -507,7 +524,8 @@ class ContractGeneratorApp:
         if result is None or result.is_blocked:
             messagebox.showerror(
                 "Генерация невозможна",
-                "Устраните ошибки в данных — они отмечены в таблице.",
+                "Устраните ошибки в данных — они отмечены в таблице "
+                "и перечислены в отчёте проверки.",
             )
             return
 
@@ -519,33 +537,27 @@ class ContractGeneratorApp:
         ):
             return
 
+        # Номер уже обрезан по краям в _collect_card; уникальность сознательно
+        # не проверяется — автоматической нумерации и реестра в приложении нет.
         number = self.contract_number.get().strip()
-        if number and self.registry.number_exists(number):
-            existing = self.registry.find(number)
-            details = existing[0] if existing else None
-            message = f"Договор с номером «{number}» уже есть в реестре"
-            if details:
-                message += f" (создан {details.created_at}, {details.company_name})"
-            if self.settings.duplicate_number_policy == "block":
-                messagebox.showerror("Дублирующийся номер", message + ".")
-                return
-            if not messagebox.askyesno(
-                "Дублирующийся номер", message + ".\n\nВсё равно продолжить?"
-            ):
-                return
 
         try:
             prepared = build_context(card)
-            required = template_placeholders(template)
             output_dir = Path(self.output_dir.get() or ".")
             output_dir.mkdir(parents=True, exist_ok=True)
             output = unique_path(
                 output_dir,
                 build_output_filename(card, number, self.add_timestamp.get()),
             )
-            report = fill_template(
-                template, prepared.context, output, required_placeholders=required
+            report = fill_template(template, prepared.context, output)
+        except PlaceholderError as exc:
+            # Структурированный отчёт: интерфейс не разбирает текст исключения.
+            logger.error(
+                "Генерация отменена, незаполнимые плейсхолдеры: %s",
+                exc.report.blocking_placeholders,
             )
+            self._show_placeholder_failure(exc)
+            return
         except TemplateError as exc:
             logger.error("Ошибка заполнения шаблона: %s", exc)
             messagebox.showerror("Договор не создан", str(exc))
@@ -567,25 +579,6 @@ class ContractGeneratorApp:
             )
             return
 
-        # Реестр пополняется только после успешно записанного файла.
-        if number:
-            try:
-                self.registry.record(
-                    number,
-                    company_name=card.get("company_name"),
-                    inn=card.get("inn"),
-                    template_name=Path(template).name,
-                    output_path=str(output),
-                    status=STATUS_OK,
-                )
-            except Exception:
-                logger.exception("Не удалось записать договор в реестр")
-                messagebox.showwarning(
-                    "Реестр договоров",
-                    "Договор создан, но запись в реестр не удалась. "
-                    "Проверка дубликатов номера может быть неполной.",
-                )
-
         self.last_output = output
         self.open_doc_button.configure(state=tk.NORMAL)
         self._set_status(f"Договор создан: {output.name}", COLOR_OK)
@@ -600,6 +593,26 @@ class ContractGeneratorApp:
 
         if self.open_folder_after.get():
             self._open_output_folder()
+
+    def _show_placeholder_failure(self, error: PlaceholderError) -> None:
+        """Показывает подробности отказа, не разбирая текст исключения."""
+        report = error.report
+        lines = [report.failure_message_ru()]
+
+        # Подсказываем, какие именно поля карточки нужно заполнить.
+        missing_fields = sorted(
+            P.required_fields_for_placeholders(report.empty_values)
+        )
+        if missing_fields:
+            lines.append("")
+            lines.append("Заполните поля: " + ", ".join(
+                F.display_name(key) for key in missing_fields
+            ))
+
+        text = "\n".join(lines)
+        self._write_report(text)
+        self._set_status("Договор не создан: шаблон заполнен не полностью.", COLOR_ERROR)
+        messagebox.showerror("Договор не создан", text)
 
     # -- открытие файлов ---------------------------------------------------
 
@@ -627,6 +640,7 @@ class ContractGeneratorApp:
     # -- завершение --------------------------------------------------------
 
     def _on_close(self) -> None:
+        self._cancel_pending_validation()
         self.settings.output_dir = self.output_dir.get()
         self.settings.last_template_path = self.template_path.get()
         self.settings.add_timestamp_to_filename = bool(self.add_timestamp.get())

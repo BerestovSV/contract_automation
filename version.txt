@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 0, 0, 0),
-    prodvers=(2, 0, 0, 0),
+    filevers=(2, 1, 0, 0),
+    prodvers=(2, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x4,
@@ -18,12 +18,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'Your Company'),
             StringStruct(u'FileDescription', u'Генератор договоров B2B'),
-            StringStruct(u'FileVersion', u'2.0.0'),
+            StringStruct(u'FileVersion', u'2.1.0'),
             StringStruct(u'InternalName', u'ContractGenerator'),
             StringStruct(u'LegalCopyright', u'Copyright © 2026'),
             StringStruct(u'OriginalFilename', u'ContractGenerator.exe'),
             StringStruct(u'ProductName', u'ContractGenerator'),
-            StringStruct(u'ProductVersion', u'2.0.0')
+            StringStruct(u'ProductVersion', u'2.1.0')
           ]
         )
       ]

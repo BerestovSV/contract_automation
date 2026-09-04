@@ -67,11 +67,11 @@ def test_legacy_unknown_position_is_not_mangled():
     ) == "Главный инженер проекта"
 
 
-def test_legacy_number_generation_is_unique():
+def test_legacy_number_generation_removed():
+    """Автоматическая генерация номера удалена вместе с реестром."""
     import contract_filler
 
-    first = contract_filler.generate_contract_number()
-    assert isinstance(first, str) and first
+    assert not hasattr(contract_filler, "generate_contract_number")
 
 
 def test_existing_card_labels_still_parse(make_xlsx, base_rows):
@@ -110,9 +110,18 @@ def test_existing_placeholders_still_supported(make_docx, make_xlsx, base_rows, 
         "contract_end_date",
     ]
     template = make_docx([f"{{{token}}}" for token in legacy_tokens])
-    card = read_company_card(make_xlsx(base_rows))
+    # Строгое правило требует значение для КАЖДОГО плейсхолдера шаблона,
+    # поэтому карточка дополняется полями, которых нет в базовом наборе.
+    rows = base_rows + [
+        ["ЭДО", "Тест-ЭДО"],
+        ["Домены заказчика", "example.test"],
+        ["Пол подписанта", "мужской"],
+    ]
+    card = read_company_card(make_xlsx(rows))
     context = build_context(card).context
 
     report = fill_template(template, context, tmp_path / "o.docx")
-    assert not report.unknown_placeholders, report.unknown_placeholders
+    assert report.success
+    assert not report.unknown_placeholders
+    assert not report.empty_values
     assert not report.remaining_placeholders

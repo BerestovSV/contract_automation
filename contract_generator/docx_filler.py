@@ -14,6 +14,11 @@
 
 Таким образом сохраняются жирность, курсив, подчёркивание, шрифт, размер,
 цвет, гиперссылки и форматирование параграфа.
+
+Строгое правило безопасности (договор — юридический документ): любой
+неизвестный, пустой или оставшийся после замены плейсхолдер ОТМЕНЯЕТ
+генерацию. Это поведение по умолчанию и его нельзя отключить параметром
+вызова.
 """
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Sequence, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -31,15 +36,25 @@ from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 
 from .models import GenerationReport
+from .placeholders import PLACEHOLDER_RE, is_supported
 
 logger = logging.getLogger(__name__)
-
-#: Любое выражение вида {...} без вложенных фигурных скобок и переводов строк.
-PLACEHOLDER_RE = re.compile(r"\{[^{}\n\r]{1,120}\}")
 
 
 class TemplateError(Exception):
     """Шаблон не удалось открыть или обработать."""
+
+
+class PlaceholderError(TemplateError):
+    """Генерация отменена: шаблон содержит незаполнимые плейсхолдеры.
+
+    Исключение несёт структурированный :class:`GenerationReport`, чтобы
+    интерфейс показывал подробности, не разбирая текст сообщения.
+    """
+
+    def __init__(self, report: GenerationReport) -> None:
+        self.report = report
+        super().__init__(report.failure_message_ru())
 
 
 # --------------------------------------------------------------------------
@@ -221,16 +236,28 @@ def fill_template(
     template_path: str | Path,
     context: Dict[str, str],
     output_path: str | Path,
-    required_placeholders: Iterable[str] = (),
 ) -> GenerationReport:
     """Создаёт заполненный договор из шаблона.
 
-    Исходный шаблон не изменяется. Результат сначала пишется во временный
-    файл в каталоге назначения и переносится на место только после успешной
-    записи; при любой ошибке временный файл удаляется.
+    Безопасность не зависит от параметров вызова: функция сама находит все
+    плейсхолдеры шаблона и отменяет генерацию, если хотя бы один из них
+    неизвестен, пуст или остался в сохранённом документе.
 
-    :param required_placeholders: плейсхолдеры, отсутствие значений которых
-        делает результат непригодным (проверяются после генерации).
+    Порядок работы:
+
+    1. найти все плейсхолдеры шаблона;
+    2. убедиться, что каждый из них известен приложению;
+    3. получить значение каждого из ``context``;
+    4. убедиться, что значение непустое;
+    5. при любой неудаче — возбудить :class:`PlaceholderError`, не создавая
+       выходной файл;
+    6. сохранить результат во временный файл, повторно открыть его и убедиться,
+       что выражений ``{...}`` не осталось;
+    7. только после этого перенести временный файл на место назначения.
+
+    :raises PlaceholderError: шаблон содержит незаполнимые плейсхолдеры;
+        отчёт доступен в атрибуте ``report``.
+    :raises TemplateError: шаблон не найден или не читается.
     """
     template = Path(template_path)
     output = Path(output_path)
@@ -249,15 +276,28 @@ def fill_template(
 
     replacements = build_replacements(context)
 
-    template_placeholders = find_placeholders(doc)
-    report.template_placeholders = sorted(template_placeholders)
+    found = find_placeholders(doc)
+    report.template_placeholders = sorted(found)
+
+    # 2. Неизвестные плейсхолдеры — блокирующая ошибка.
     report.unknown_placeholders = sorted(
-        token for token in template_placeholders if token not in replacements
+        token for token in found
+        if not is_supported(token) or token not in replacements
     )
+
+    # 3-4. Известные плейсхолдеры с пустым значением — блокирующая ошибка.
     report.empty_values = sorted(
-        token for token in template_placeholders
-        if token in replacements and not replacements[token].strip()
+        token for token in found
+        if token not in report.unknown_placeholders
+        and not replacements.get(token, "").strip()
     )
+
+    if report.unknown_placeholders or report.empty_values:
+        logger.error(
+            "Генерация отменена: неизвестных плейсхолдеров %d, пустых %d",
+            len(report.unknown_placeholders), len(report.empty_values),
+        )
+        raise PlaceholderError(report)
 
     report.replaced = replace_in_document(doc, replacements)
 
@@ -271,30 +311,20 @@ def fill_template(
     try:
         doc.save(str(tmp_path))
 
-        # Контроль результата по фактически сохранённому файлу.
-        remaining = find_placeholders_in_file(tmp_path)
-        required = set(required_placeholders)
-        report.remaining_placeholders = sorted(
-            token for token in remaining
-            if token in replacements or token in required
-        )
-
+        # 6. Контроль по фактически сохранённому файлу: остаться не должно
+        #    НИ ОДНОГО выражения {...}, включая незамеченные ранее.
+        report.remaining_placeholders = sorted(find_placeholders_in_file(tmp_path))
         if report.remaining_placeholders:
-            report.errors.append(
-                "В готовом документе остались незаполненные плейсхолдеры."
+            logger.error(
+                "Генерация отменена: в сохранённом файле остались плейсхолдеры %s",
+                report.remaining_placeholders,
             )
-            raise TemplateError(
-                "В документе остались незаполненные плейсхолдеры: "
-                + ", ".join(report.remaining_placeholders)
-            )
+            raise PlaceholderError(report)
 
+        # 7. Перенос на место назначения — только после успешной проверки.
         os.replace(str(tmp_path), str(output))
-    except Exception:
-        _remove_quietly(tmp_path)
-        raise
     finally:
-        if tmp_path.exists():
-            _remove_quietly(tmp_path)
+        _remove_quietly(tmp_path)
 
     logger.info(
         "Договор сформирован: %s (замен: %d)",

@@ -1,7 +1,8 @@
 """Локальные настройки приложения (JSON в каталоге пользователя).
 
 Хранятся только рабочие предпочтения интерфейса: последние использованные
-каталоги и формат номера договора. Данные компаний здесь не сохраняются.
+каталоги и настройки имени файла. Данные компаний здесь не сохраняются.
+Номера договоров вводятся вручную, поэтому настроек нумерации нет.
 """
 from __future__ import annotations
 
@@ -17,8 +18,6 @@ from .paths import default_output_dir, settings_file
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_NUMBER_FORMAT = "СЛД-{seq:04d}-{year}-М"
-
 
 @dataclass
 class Settings:
@@ -28,10 +27,8 @@ class Settings:
     last_card_dir: str = ""
     output_dir: str = ""
     last_template_path: str = ""
-    number_format: str = DEFAULT_NUMBER_FORMAT
     add_timestamp_to_filename: bool = True
     open_folder_after_generate: bool = False
-    duplicate_number_policy: str = "confirm"  # confirm | block
     window_geometry: str = ""
 
     def resolved_output_dir(self) -> Path:

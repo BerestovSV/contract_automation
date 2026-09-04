@@ -6,7 +6,8 @@ import pytest
 from conftest import docx_text
 from contract_generator.docx_filler import fill_template
 from contract_generator.excel_reader import read_company_card
-from contract_generator.models import SOURCE_CARD, SOURCE_INFERRED
+from contract_generator.models import SOURCE_CARD
+from contract_generator.docx_filler import PlaceholderError
 from contract_generator.service import (
     build_context,
     build_output_filename,
@@ -39,9 +40,7 @@ def test_full_generation_from_synthetic_inputs(make_xlsx, base_rows, template, t
 
     context = build_context(card).context
     out = tmp_path / "договор.docx"
-    report = fill_template(
-        template, context, out, required_placeholders=template_placeholders(template)
-    )
+    report = fill_template(template, context, out)
 
     assert report.success
     assert out.exists()
@@ -66,12 +65,13 @@ def test_generation_blocked_by_validation(make_xlsx, base_rows, template):
 
 def test_feminine_signatory_agreement(make_xlsx, base_rows, template, tmp_path):
     rows = [
-        ["Подписант, в лице", "Петрова Анна Сергеевна"] if r[0] == "Подписант, в лице" else r
+        ["Подписант, в лице", "Петрова Анна Сергеевна"] if r[0] == "Подписант, в лице"
+        else (["Пол подписанта", "женский"] if r[0] == "Пол подписанта" else r)
         for r in base_rows
     ]
     card = read_company_card(make_xlsx(rows))
     prepared = build_context(card)
-    assert prepared.gender.inferred is True
+    assert prepared.gender.inferred is False
     assert prepared.context["acting_form_full"] == "действующей на основании Устава"
 
     out = tmp_path / "o.docx"
@@ -80,17 +80,31 @@ def test_feminine_signatory_agreement(make_xlsx, base_rows, template, tmp_path):
 
 
 def test_explicit_gender_overrides_inference(make_xlsx, base_rows):
-    rows = base_rows + [["Пол подписанта", "женский"]]
+    rows = [
+        ["Пол подписанта", "женский"] if r[0] == "Пол подписанта" else r
+        for r in base_rows
+    ]
     card = read_company_card(make_xlsx(rows))
     prepared = build_context(card)
     assert prepared.gender.inferred is False
     assert prepared.context["acting_form"] == "действующей"
 
 
-def test_inferred_gender_marked_in_card(make_xlsx, base_rows):
-    card = read_company_card(make_xlsx(base_rows))
-    build_context(card)
-    assert card.source_of("signatory_gender") == SOURCE_INFERRED
+def test_inferred_gender_is_not_written_into_card(make_xlsx, base_rows):
+    """Выведенный пол не подставляется в карточку как подтверждённый."""
+    rows = [r for r in base_rows if r[0] != "Пол подписанта"]
+    card = read_company_card(make_xlsx(rows))
+    prepared = build_context(card)
+    assert prepared.gender.inferred is True
+    assert card.get("signatory_gender") == ""
+
+
+def test_inferred_gender_blocks_generation(make_xlsx, base_rows, template):
+    rows = [r for r in base_rows if r[0] != "Пол подписанта"]
+    card = read_company_card(make_xlsx(rows))
+    result = validate_card(card, template)
+    assert result.is_blocked
+    assert any(i.field == "signatory_gender" for i in result.errors)
 
 
 def test_card_values_keep_source_card(make_xlsx, base_rows):

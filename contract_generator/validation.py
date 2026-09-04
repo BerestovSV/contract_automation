@@ -15,6 +15,7 @@ from typing import Dict, Iterable, Optional, Set
 
 from . import fields as F
 from . import language as L
+from . import placeholders as P
 from .models import ERROR, WARNING, ValidationResult
 
 #: Поля, обязательные всегда (независимо от шаблона).
@@ -142,29 +143,25 @@ def check_email(value: str) -> Optional[str]:
 # Основная валидация
 # --------------------------------------------------------------------------
 
-def _token_matches(token: str, key: str) -> bool:
-    """Плейсхолдер ``token`` (без скобок) относится к полю ``key``."""
-    return token == key or token.startswith(key + "_")
-
-
 def required_fields_for_template(
     template_placeholders: Optional[Iterable[str]] = None,
 ) -> Set[str]:
-    """Набор обязательных полей с учётом плейсхолдеров выбранного шаблона.
+    """Поля карточки, обязательные для выбранного шаблона.
+
+    Состав определяется явной картой зависимостей
+    :data:`~contract_generator.placeholders.PLACEHOLDER_DEPENDENCIES`, а не
+    совпадением префиксов: ``{company_name_full}`` требует и ``company_name``,
+    и ``ownership_form``, а ``{acting_form}`` — пол подписанта, который вообще
+    не является префиксом этого плейсхолдера.
 
     Без списка плейсхолдеров возвращается базовый набор плюс банковские поля.
-    Если список передан, обязательными считаются только те поля, которые
-    шаблон действительно использует (в том числе через падежные формы).
     """
     if template_placeholders is None:
         return set(ALWAYS_REQUIRED) | set(BANK_FIELDS)
 
-    used = {token.strip("{}") for token in template_placeholders}
-    candidates = set(ALWAYS_REQUIRED) | set(BANK_FIELDS)
-    return {
-        key for key in candidates
-        if any(_token_matches(token, key) for token in used)
-    }
+    required = P.required_fields_for_placeholders(template_placeholders)
+    # Всегда обязательные поля учитываются, только если шаблон их использует.
+    return required
 
 
 def validate_company_data(
@@ -186,17 +183,31 @@ def validate_company_data(
     def value_of(key: str) -> str:
         return str(data.get(key, "") or "").strip()
 
-    used_tokens = (
-        {token.strip("{}") for token in template_placeholders}
-        if template_placeholders is not None else None
+    placeholder_list = (
+        list(template_placeholders) if template_placeholders is not None else None
+    )
+    used_fields = (
+        P.required_fields_for_placeholders(placeholder_list)
+        if placeholder_list is not None else None
     )
 
     def used(key: str) -> bool:
-        if used_tokens is None:
+        """Использует ли выбранный шаблон это поле (прямо или как источник)."""
+        if used_fields is None:
             return True
-        return any(_token_matches(token, key) for token in used_tokens)
+        return key in used_fields
 
-    required = required_fields_for_template(template_placeholders)
+    required = required_fields_for_template(placeholder_list)
+
+    # --- неизвестные плейсхолдеры шаблона ---------------------------------
+    # Строгое правило: незнакомый плейсхолдер всегда блокирует генерацию.
+    for placeholder in sorted(P.unknown_placeholders(placeholder_list or ())):
+        result.add(
+            "template",
+            f"Шаблон содержит неизвестный плейсхолдер {placeholder}. "
+            "Проверьте, нет ли опечатки в шаблоне, или удалите его.",
+            ERROR,
+        )
 
     ownership = value_of("ownership_form")
     company_name = value_of("company_name")
@@ -299,13 +310,27 @@ def validate_company_data(
             WARNING,
         )
 
-    if gender_inferred and (used("acting_form") or used("based_on")):
-        result.add(
-            "signatory_gender",
-            "Пол подписанта определён автоматически и влияет на текст договора "
-            "(«действующего»/«действующей»). Проверьте значение.",
-            WARNING,
-        )
+    # Пол влияет на текст договора («действующего»/«действующей»), поэтому
+    # автоматически выведенное значение НЕ считается подтверждённым: пока
+    # менеджер не указал пол явно, генерация заблокирована.
+    if used("signatory_gender"):
+        raw_gender = value_of("signatory_gender")
+        if not raw_gender:
+            if gender_inferred:
+                result.add(
+                    "signatory_gender",
+                    "Пол подписанта определён автоматически и влияет на текст "
+                    "договора («действующего»/«действующей»). Укажите пол явно: "
+                    "«мужской» или «женский».",
+                    ERROR,
+                )
+        elif L.parse_explicit_gender(raw_gender) is None:
+            result.add(
+                "signatory_gender",
+                f'Значение «{raw_gender}» не распознано как пол. Укажите '
+                "«мужской» или «женский».",
+                ERROR,
+            )
 
     if not position_known and value_of("signatory_position"):
         result.add(
@@ -316,9 +341,9 @@ def validate_company_data(
         )
 
     # --- договор -----------------------------------------------------------
-    number = value_of("contract_number")
-    if number and len(number) > 100:
-        result.add("contract_number", "Номер договора слишком длинный.", ERROR)
+    # Номер договора вводится менеджером вручную. Формат не проверяется и
+    # уникальность не контролируется — значение принимается как есть, только
+    # с обрезкой внешних пробелов (её выполняет value_of).
 
     contract_date = value_of("contract_date")
     if contract_date and L.parse_date(contract_date) is None:
@@ -332,8 +357,9 @@ def validate_company_data(
     if end_date and L.parse_date(end_date) is None:
         result.add(
             "contract_end_date",
-            "Дата окончания договора не распознана. Ожидается формат дд.мм.гггг.",
-            WARNING,
+            "Дата окончания договора не распознана или не существует. "
+            "Ожидается формат дд.мм.гггг.",
+            ERROR if used("contract_end_date") else WARNING,
         )
 
     start = L.parse_date(contract_date)

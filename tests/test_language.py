@@ -141,9 +141,12 @@ def test_format_date_ru():
     assert L.format_date_ru("01.03.2025") == "«01» марта 2025 г."
 
 
-def test_format_date_ru_keeps_unparsed_value():
-    """Нераспознанная дата не подменяется молча."""
-    assert L.format_date_ru("до конца года") == "до конца года"
+def test_format_date_ru_rejects_unparsed_value():
+    """Нераспознанная дата даёт пустую строку и блокирует генерацию.
+
+    Исходное значение остаётся в карточке для исправления пользователем.
+    """
+    assert L.format_date_ru("до конца года") == ""
 
 
 def test_format_date_numeric():

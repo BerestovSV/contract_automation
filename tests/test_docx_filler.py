@@ -7,6 +7,7 @@ from docx.shared import Pt, RGBColor
 
 from conftest import docx_text
 from contract_generator.docx_filler import (
+    PlaceholderError,
     TemplateError,
     fill_template,
     find_placeholders_in_file,
@@ -129,33 +130,85 @@ def test_font_size_and_color_preserved(make_docx, tmp_path):
     assert result.font.color.rgb == RGBColor(0xFF, 0x00, 0x00)
 
 
-def test_unknown_placeholder_reported_but_not_blocking(make_docx, tmp_path):
+def test_unknown_placeholder_blocks_output(make_docx, tmp_path):
+    """Строгое правило: незнакомый плейсхолдер отменяет генерацию."""
     template = make_docx(["{inn} и {nonexistent_field}"])
     out = tmp_path / "out.docx"
-    report = fill_template(template, CTX, out)
-    assert report.unknown_placeholders == ["{nonexistent_field}"]
-    assert report.success
-    assert out.exists()
+
+    with pytest.raises(PlaceholderError) as exc:
+        fill_template(template, CTX, out)
+
+    assert exc.value.report.unknown_placeholders == ["{nonexistent_field}"]
+    assert not exc.value.report.success
+    assert not out.exists()
+    assert not list(tmp_path.glob(".contract_*"))
 
 
-def test_empty_value_reported(make_docx, tmp_path):
+def test_typo_in_placeholder_blocks_output(make_docx, tmp_path):
+    """Опечатка в имени поля должна быть замечена, а не проигнорирована."""
+    template = make_docx(["Договор № {contract_namber}"])
+    out = tmp_path / "out.docx"
+
+    with pytest.raises(PlaceholderError) as exc:
+        fill_template(template, CTX, out)
+
+    assert "{contract_namber}" in exc.value.report.unknown_placeholders
+    assert not out.exists()
+
+
+def test_empty_value_blocks_output(make_docx, tmp_path):
+    """Известный плейсхолдер без значения отменяет генерацию."""
     template = make_docx(["Телефон: {phone}"])
     out = tmp_path / "out.docx"
-    report = fill_template(template, {**CTX, "phone": ""}, out)
-    assert "{phone}" in report.empty_values
-    assert "Телефон: " in docx_text(out)
+
+    with pytest.raises(PlaceholderError) as exc:
+        fill_template(template, {**CTX, "phone": ""}, out)
+
+    assert "{phone}" in exc.value.report.empty_values
+    assert not out.exists()
+    assert not list(tmp_path.glob(".contract_*"))
 
 
-def test_required_placeholder_left_unresolved_blocks_output(make_docx, tmp_path):
-    """Если требуемый плейсхолдер остался, файл не создаётся."""
-    template = make_docx(["{inn} и {contract_number}"])
+def test_whitespace_only_value_blocks_output(make_docx, tmp_path):
+    template = make_docx(["Телефон: {phone}"])
+    with pytest.raises(PlaceholderError):
+        fill_template(template, {**CTX, "phone": "   "}, tmp_path / "out.docx")
+
+
+def test_placeholder_missing_from_context_blocks_output(make_docx, tmp_path):
+    """Поле, которого нет в контексте, считается незаполненным."""
+    template = make_docx(["{inn} {contract_number}"])
     out = tmp_path / "out.docx"
 
-    with pytest.raises(TemplateError):
-        fill_template(template, CTX, out, required_placeholders=["{contract_number}"])
+    with pytest.raises(PlaceholderError) as exc:
+        fill_template(template, CTX, out)
 
+    assert "{contract_number}" in exc.value.report.blocking_placeholders
     assert not out.exists()
-    # Временные файлы удалены.
+
+
+def test_no_temp_files_left_after_failure(make_docx, tmp_path):
+    template = make_docx(["{unknown_a} {unknown_b}"])
+    with pytest.raises(PlaceholderError):
+        fill_template(template, CTX, tmp_path / "out.docx")
+    assert list(tmp_path.iterdir()) == [template]
+
+
+def test_remaining_placeholder_after_save_blocks_output(make_docx, tmp_path, monkeypatch):
+    """Проверка по сохранённому файлу — последний рубеж перед переносом."""
+    import contract_generator.docx_filler as df
+
+    template = make_docx(["{inn}"])
+    out = tmp_path / "out.docx"
+
+    # Имитируем ситуацию, когда в сохранённом документе всё же остался {...}.
+    monkeypatch.setattr(df, "find_placeholders_in_file", lambda _p: {"{residual}"})
+
+    with pytest.raises(PlaceholderError) as exc:
+        df.fill_template(template, CTX, out)
+
+    assert exc.value.report.remaining_placeholders == ["{residual}"]
+    assert not out.exists()
     assert not list(tmp_path.glob(".contract_*"))
 
 

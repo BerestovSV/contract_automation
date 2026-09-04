@@ -3,7 +3,7 @@ r"""Разделение упакованных ресурсов и записы
 Правила:
 * ресурсы только для чтения ищутся рядом с исполняемым файлом или во
   временной директории PyInstaller (``sys._MEIPASS``);
-* всё, что записывается (настройки, реестр договоров, логи), хранится в
+* всё, что записывается (настройки и логи), хранится в
   ``%LOCALAPPDATA%\ContractGenerator`` и никогда не во временной директории
   PyInstaller, которая удаляется при выходе из программы.
 """
@@ -62,10 +62,6 @@ def user_data_dir() -> Path:
 
 def settings_file() -> Path:
     return user_data_dir() / "settings.json"
-
-
-def registry_file() -> Path:
-    return user_data_dir() / "contracts.sqlite3"
 
 
 def log_dir() -> Path:

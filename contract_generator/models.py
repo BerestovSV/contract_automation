@@ -109,7 +109,12 @@ class CompanyCard:
 
 @dataclass
 class GenerationReport:
-    """Отчёт о заполнении шаблона."""
+    """Отчёт о заполнении шаблона.
+
+    Используется и при успехе, и при отказе: :class:`PlaceholderError` несёт
+    этот же объект, чтобы интерфейс показывал подробности, не разбирая текст
+    исключения.
+    """
 
     template_path: str = ""
     output_path: str = ""
@@ -122,35 +127,52 @@ class GenerationReport:
     created_at: datetime = field(default_factory=datetime.now)
 
     @property
+    def blocking_placeholders(self) -> List[str]:
+        """Все плейсхолдеры, из-за которых генерация невозможна."""
+        return sorted(
+            set(self.unknown_placeholders)
+            | set(self.empty_values)
+            | set(self.remaining_placeholders)
+        )
+
+    @property
     def success(self) -> bool:
         """Успешна ли генерация.
 
-        Успех невозможен, если в готовом документе остались неразрешённые
-        плейсхолдеры или были ошибки обработки.
+        Успех невозможен, если остался хотя бы один неизвестный, пустой или
+        неразрешённый плейсхолдер.
         """
-        return not self.errors and not self.remaining_placeholders
+        return not self.errors and not self.blocking_placeholders
+
+    def failure_message_ru(self) -> str:
+        """Сообщение об отказе для показа пользователю."""
+        lines: List[str] = ["Договор не создан: шаблон заполнен не полностью."]
+        if self.unknown_placeholders:
+            lines.append(
+                "Неизвестные приложению плейсхолдеры (проверьте, нет ли опечатки "
+                "в шаблоне): " + ", ".join(self.unknown_placeholders)
+            )
+        if self.empty_values:
+            lines.append(
+                "Плейсхолдеры без значения (заполните соответствующие поля): "
+                + ", ".join(self.empty_values)
+            )
+        if self.remaining_placeholders:
+            lines.append(
+                "Плейсхолдеры остались в сохранённом документе: "
+                + ", ".join(self.remaining_placeholders)
+            )
+        for error in self.errors:
+            lines.append(error)
+        return "\n".join(lines)
 
     def summary_ru(self) -> str:
         """Краткий отчёт на русском для показа пользователю."""
+        if not self.success:
+            return self.failure_message_ru()
         lines: List[str] = []
         total = sum(self.replaced.values())
         lines.append(f"Заменено вхождений плейсхолдеров: {total}")
         if self.replaced:
             lines.append("Заменённые плейсхолдеры: " + ", ".join(sorted(self.replaced)))
-        if self.empty_values:
-            lines.append(
-                "Плейсхолдеры с пустым значением: " + ", ".join(sorted(self.empty_values))
-            )
-        if self.unknown_placeholders:
-            lines.append(
-                "Неизвестные плейсхолдеры (нет такого поля): "
-                + ", ".join(sorted(self.unknown_placeholders))
-            )
-        if self.remaining_placeholders:
-            lines.append(
-                "ОСТАЛИСЬ НЕЗАПОЛНЕННЫМИ: "
-                + ", ".join(sorted(self.remaining_placeholders))
-            )
-        if self.errors:
-            lines.append("Ошибки: " + "; ".join(self.errors))
         return "\n".join(lines)

@@ -5,7 +5,9 @@
 * чтение Excel        -> :mod:`contract_generator.excel_reader`
 * язык и склонения    -> :mod:`contract_generator.language`
 * заполнение шаблона  -> :mod:`contract_generator.docx_filler`
-* номера договоров    -> :mod:`contract_generator.contract_numbers`
+
+Номера договоров теперь вводятся менеджером вручную: автоматическая генерация
+и реестр удалены, поэтому ``generate_contract_number`` здесь больше нет.
 
 Здесь остались только обёртки со старыми именами функций.
 Новый код должен использовать пакет напрямую.
@@ -17,9 +19,6 @@ from typing import Dict
 
 from contract_generator import fields as _F
 from contract_generator import language as _L
-from contract_generator.contract_numbers import (
-    generate_contract_number as _generate_number,
-)
 from contract_generator.docx_filler import fill_template as _fill_template
 from contract_generator.excel_reader import load_company_data  # noqa: F401
 from contract_generator.models import CompanyCard
@@ -80,20 +79,17 @@ def fill_template(template_path, company_data, output_path):
     """Устаревшее: заполняет шаблон и возвращает путь к результату.
 
     Новый API — :func:`contract_generator.docx_filler.fill_template` —
-    возвращает подробный отчёт :class:`~contract_generator.models.GenerationReport`.
+    возвращает подробный отчёт :class:`~contract_generator.models.GenerationReport`
+    и возбуждает ``PlaceholderError``, если хотя бы один плейсхолдер шаблона
+    неизвестен или остался без значения. Обёртка это поведение НЕ ослабляет.
     """
     _fill_template(template_path, company_data, output_path)
     return output_path
 
 
-def generate_contract_number() -> str:
-    """Устаревшее: номер из локального реестра (без случайных чисел)."""
-    return _generate_number()
-
-
 __all__ = [
     "load_company_data", "get_company_info", "fill_template",
-    "generate_contract_number", "detect_gender", "decline_ownership",
+    "detect_gender", "decline_ownership",
     "decline_position", "get_gender_agreement", "format_date_ru",
     "get_ownership_full_name",
 ]

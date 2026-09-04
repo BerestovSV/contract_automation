@@ -16,7 +16,6 @@ from . import fields as F
 from . import language as L
 from .docx_filler import TemplateError, find_placeholders_in_file, safe_filename
 from .models import (
-    SOURCE_INFERRED,
     WARNING,
     CompanyCard,
     Issue,
@@ -47,30 +46,38 @@ def build_context(card: CompanyCard) -> PreparedContract:
     prepared = PreparedContract()
     context: Dict[str, str] = {}
 
-    # Простые поля переносятся как есть.
+    # Простые поля переносятся как есть; обрезаются только внешние пробелы.
+    # Номер договора вводится менеджером вручную и не проверяется по формату.
     for spec in F.FIELD_SPECS:
         context[spec.key] = str(data.get(spec.key, "") or "").strip()
 
     # --- пол подписанта ----------------------------------------------------
+    # Пол управляет согласованием («действующего»/«действующей»), поэтому
+    # ДОГАДКА в договор не попадает: пока менеджер не указал пол явно,
+    # зависящие от него плейсхолдеры остаются пустыми и блокируют генерацию.
     gender = L.resolve_gender(
         data.get("signatory_gender"), data.get("signatory_full", "")
     )
     prepared.gender = gender
-    context["signatory_gender"] = gender.label_ru
-    context["acting_form"] = L.acting_form(gender.gender)
     based_on = context.get("based_on", "")
-    context["acting_form_full"] = (
-        f"{context['acting_form']} на основании {based_on}" if based_on
-        else context["acting_form"]
-    )
-    context["based_on_agreed"] = f"{context['acting_form']} на основании"
-    context["based_on_agreed_full"] = context["acting_form_full"]
+    gender_confirmed = not gender.inferred
 
-    if gender.inferred and gender.note:
-        prepared.notes.append(Issue("signatory_gender", gender.note, WARNING))
-        if not card.get("signatory_gender").strip():
-            # Значение помечается как выведенное, чтобы интерфейс показал это.
-            card.set("signatory_gender", gender.label_ru, SOURCE_INFERRED)
+    if gender_confirmed:
+        acting = L.acting_form(gender.gender)
+        context["signatory_gender"] = gender.label_ru
+        context["acting_form"] = acting
+        context["acting_form_full"] = (
+            f"{acting} на основании {based_on}" if based_on else ""
+        )
+        context["based_on_agreed"] = f"{acting} на основании" if based_on else ""
+        context["based_on_agreed_full"] = context["acting_form_full"]
+    else:
+        context["signatory_gender"] = ""
+        context["acting_form"] = ""
+        context["acting_form_full"] = ""
+        context["based_on_agreed"] = ""
+        context["based_on_agreed_full"] = ""
+        prepared.notes.append(Issue("signatory_gender", gender.note or "", WARNING))
 
     # --- должность ---------------------------------------------------------
     position = L.decline_position(context.get("signatory_position", ""))
@@ -104,7 +111,10 @@ def build_context(card: CompanyCard) -> PreparedContract:
     # --- даты --------------------------------------------------------------
     context["contract_date"] = L.format_date_ru(data.get("contract_date", ""))
     context["contract_date_numeric"] = L.format_date_numeric(data.get("contract_date", ""))
-    context["contract_end_date"] = L.format_date_ru(data.get("contract_end_date", ""))
+    # У даты окончания собственный формат: "04" сентября 2029 г. (прямые кавычки).
+    context["contract_end_date"] = L.format_contract_end_date_ru(
+        data.get("contract_end_date", "")
+    )
     context["contract_end_date_numeric"] = L.format_date_numeric(
         data.get("contract_end_date", "")
     )

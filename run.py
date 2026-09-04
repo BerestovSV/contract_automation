@@ -1,19 +1,9 @@
-"""
-Запуск приложения
-"""
+"""Псевдоним запуска приложения: ``python run.py``."""
+from __future__ import annotations
+
 import sys
-import os
 
-# Добавляем текущую директорию в путь для импорта
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-try:
-    from main import main
-except ImportError as e:
-    print(f"Ошибка импорта: {e}")
-    print("Убедитесь, что все файлы находятся в одной папке")
-    input("Нажмите Enter для выхода...")
-    sys.exit(1)
+from contract_generator.app import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv[1:]))

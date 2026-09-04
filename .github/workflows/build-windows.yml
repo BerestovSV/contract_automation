@@ -1,0 +1,57 @@
+name: Сборка Windows EXE
+
+# Публичный релиз НЕ создаётся: EXE публикуется только как артефакт запуска.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Получение исходников
+        uses: actions/checkout@v4
+
+      - name: Установка Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Проверка импортов
+        run: python -c "import contract_generator.app, config, contract_filler; print('imports ok')"
+
+      - name: Тесты
+        run: python -m pytest -q
+
+      - name: Сборка EXE
+        run: python -m PyInstaller --noconfirm --clean ContractGenerator.spec
+
+      - name: Проверка результата сборки
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/ContractGenerator.exe)) {
+            Write-Error "dist/ContractGenerator.exe не создан"
+            exit 1
+          }
+          Get-Item dist/ContractGenerator.exe | Select-Object Name, Length
+
+      - name: Публикация артефакта
+        uses: actions/upload-artifact@v4
+        with:
+          name: ContractGenerator-windows
+          path: dist/ContractGenerator.exe
+          if-no-files-found: error
+          retention-days: 30

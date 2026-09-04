@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+*.spec.bak
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+# Локальные пользовательские данные
+data/*
+!data/.gitkeep
+output/*
+!output/.gitkeep
+templates/*
+!templates/.gitkeep
+~$*.docx
+~$*.xlsx

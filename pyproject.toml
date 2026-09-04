@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contract-generator"
+version = "2.0.0"
+description = "Генератор договоров B2B из шаблона Word и карточки компании Excel"
+requires-python = ">=3.11"
+dependencies = [
+    "python-docx==1.1.2",
+    "openpyxl==3.1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4", "pyinstaller>=6.11,<7"]
+
+[project.gui-scripts]
+contract-generator = "contract_generator.app:main"
+
+[tool.setuptools]
+packages = ["contract_generator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = "-q"

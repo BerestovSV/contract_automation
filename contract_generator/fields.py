@@ -24,13 +24,21 @@ NUMBER = "number"
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """Описание одного поля карточки компании."""
+    """Описание одного поля карточки компании.
+
+    ``show_in_editor`` управляет только видимостью поля в общей таблице
+    редактирования. Поле со значением ``False`` полноценно участвует в импорте
+    из Excel, плейсхолдерах, валидации и построении контекста, но редактируется
+    отдельным элементом интерфейса — так исключается второй ввод того же
+    значения.
+    """
 
     key: str
     display: str
     aliases: Tuple[str, ...] = ()
     kind: str = TEXT
     group: str = "Прочее"
+    show_in_editor: bool = True
 
 
 FIELD_SPECS: Tuple[FieldSpec, ...] = (
@@ -147,9 +155,12 @@ FIELD_SPECS: Tuple[FieldSpec, ...] = (
         TEXT, "ЭДО",
     ),
     FieldSpec(
+        # Номер договора вводится в отдельном поле рядом с кнопкой генерации,
+        # поэтому в общей таблице он не показывается (иначе было бы два
+        # редактируемых элемента для одного значения).
         "contract_number", "Номер договора",
         ("Номер договора", "№ договора", "Номер", "N договора"),
-        TEXT, "Договор",
+        TEXT, "Договор", show_in_editor=False,
     ),
     FieldSpec(
         "contract_date", "Дата договора",
@@ -230,5 +241,15 @@ def display_name(key: str) -> str:
     return spec.display if spec else key
 
 
-def fields_in_group(group: str) -> List[FieldSpec]:
-    return [spec for spec in FIELD_SPECS if spec.group == group]
+def fields_in_group(group: str, editable_only: bool = False) -> List[FieldSpec]:
+    """Поля группы; при ``editable_only`` — только показываемые в таблице."""
+    return [
+        spec for spec in FIELD_SPECS
+        if spec.group == group and (spec.show_in_editor or not editable_only)
+    ]
+
+
+#: Поля, редактируемые в общей таблице интерфейса.
+EDITOR_FIELDS: Tuple[FieldSpec, ...] = tuple(
+    spec for spec in FIELD_SPECS if spec.show_in_editor
+)

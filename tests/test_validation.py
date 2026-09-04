@@ -129,7 +129,8 @@ def test_template_aware_required_fields():
     """Без банковских плейсхолдеров банковские поля не обязательны."""
     placeholders = ["{company_name}", "{inn}", "{contract_number}"]
     data = {"company_name": "ООО «Р»", "inn": "7707083893",
-            "contract_number": "1", "kpp": "770701001"}
+            "contract_number": "1", "contract_date": "01.03.2025",
+            "kpp": "770701001"}
     result = V.validate_company_data(data, template_placeholders=placeholders)
     assert not result.is_blocked, result.errors
 
@@ -212,3 +213,86 @@ def test_format_result_ru_is_russian():
 
 def test_format_result_ru_when_clean():
     assert "пройдена" in V.format_result_ru(V.validate_company_data(GOOD))
+
+
+# --- всегда обязательные поля ---------------------------------------------
+
+MINIMAL_TEMPLATE = ["{inn}"]  # шаблон, не упоминающий обязательные поля
+
+
+def test_always_required_set_is_exactly_three_fields():
+    assert set(V.ALWAYS_REQUIRED) == {
+        "company_name", "contract_number", "contract_date",
+    }
+
+
+@pytest.mark.parametrize("key", ["company_name", "contract_number", "contract_date"])
+def test_always_required_blocks_when_empty(key):
+    data = dict(GOOD)
+    data[key] = ""
+    result = V.validate_company_data(data)
+    assert result.is_blocked
+    assert any(i.field == key and i.level == ERROR for i in result.errors)
+
+
+@pytest.mark.parametrize("key", ["company_name", "contract_number", "contract_date"])
+def test_always_required_blocks_even_if_template_omits_it(key):
+    """Шаблон содержит только {inn}, но эти поля обязательны всё равно."""
+    data = dict(GOOD)
+    data[key] = ""
+    result = V.validate_company_data(data, template_placeholders=MINIMAL_TEMPLATE)
+    assert result.is_blocked
+    assert any(i.field == key and i.level == ERROR for i in result.errors)
+
+
+def test_invalid_contract_date_blocks_even_if_template_omits_it():
+    data = dict(GOOD, contract_date="31.02.2025")
+    result = V.validate_company_data(data, template_placeholders=MINIMAL_TEMPLATE)
+    assert result.is_blocked
+    assert any(i.field == "contract_date" for i in result.errors)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["phone", "email", "domains", "postal_address", "edo_provider",
+     "bank_account", "corr_account", "bank_name", "bik", "ogrn",
+     "signatory_short", "contract_end_date", "contract_term_years"],
+)
+def test_optional_fields_do_not_block(key):
+    """Необязательные поля не мешают, пока шаблон их не использует."""
+    data = dict(GOOD)
+    data[key] = ""
+    result = V.validate_company_data(data, template_placeholders=MINIMAL_TEMPLATE)
+    assert not result.is_blocked, (key, result.errors)
+
+
+def test_template_requirements_are_added_not_substituted():
+    """Требования шаблона ДОПОЛНЯЮТ всегда обязательные поля."""
+    required = V.required_fields_for_template(["{bik}", "{acting_form_full}"])
+    assert set(V.ALWAYS_REQUIRED) <= required          # всегда обязательные
+    assert {"bik", "signatory_gender", "based_on"} <= required  # из шаблона
+
+
+def test_minimal_template_requires_always_plus_inn():
+    assert V.required_fields_for_template(MINIMAL_TEMPLATE) == {
+        "company_name", "contract_number", "contract_date", "inn",
+    }
+
+
+def test_company_name_full_adds_ownership_form():
+    required = V.required_fields_for_template(["{company_name_full}"])
+    assert "ownership_form" in required
+    assert set(V.ALWAYS_REQUIRED) <= required
+
+
+def test_bank_fields_required_only_with_their_placeholders():
+    assert "bik" not in V.required_fields_for_template(MINIMAL_TEMPLATE)
+    assert "bik" in V.required_fields_for_template(["{bik}"])
+
+
+def test_contract_number_format_is_never_validated():
+    """Формат и уникальность номера не проверяются — принимается как есть."""
+    for value in ("1", "abc", "№ 42/АБ-2025", "x" * 200):
+        data = dict(GOOD, contract_number=value)
+        result = V.validate_company_data(data, template_placeholders=MINIMAL_TEMPLATE)
+        assert not any(i.field == "contract_number" for i in result.issues), value

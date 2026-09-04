@@ -11,6 +11,8 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
+from tkinter import ttk  # noqa: E402
+
 from contract_generator.app import (  # noqa: E402
     STATUS_ERROR_TEXT,
     STATUS_OK_TEXT,
@@ -50,10 +52,10 @@ def flush(app) -> None:
 FULL_TEMPLATE = "{inn} {company_name} {contract_number}"
 
 
-def test_app_builds_a_row_for_every_field(app):
+def test_app_builds_a_row_for_every_editable_field(app):
     from contract_generator import fields as F
 
-    assert set(app.rows) == {spec.key for spec in F.FIELD_SPECS}
+    assert set(app.rows) == {spec.key for spec in F.EDITOR_FIELDS}
 
 
 def test_generate_disabled_without_data(app):
@@ -127,6 +129,90 @@ def test_no_automatic_number_button(app):
     ]
     assert not any("Сформировать номер" in text for text in labels)
     assert any("Номер договора" in text for text in labels)
+
+
+def test_contract_number_has_no_row_in_the_table(app):
+    """В общей таблице строки для номера договора нет — ввод только один."""
+    assert "contract_number" not in app.rows
+
+
+def test_exactly_one_editable_contract_number_control(app):
+    """Во всём окне ровно один редактируемый элемент для номера договора."""
+    def walk(widget):
+        yield widget
+        for child in widget.winfo_children():
+            yield from walk(child)
+
+    entries = [
+        w for w in walk(app.root)
+        if isinstance(w, ttk.Entry)
+        and str(w.cget("textvariable")) == str(app.contract_number)
+    ]
+    assert len(entries) == 1
+
+    # Ни одна строка таблицы не привязана к тому же значению.
+    row_variables = {str(row.variable) for row in app.rows.values()}
+    assert str(app.contract_number) not in row_variables
+
+
+def test_contract_number_field_stays_in_canonical_definitions():
+    """Поле остаётся в FIELD_SPECS: оно нужно импорту, валидации, контексту."""
+    from contract_generator import fields as F
+
+    assert "contract_number" in F.FIELDS_BY_KEY
+    assert F.FIELDS_BY_KEY["contract_number"].show_in_editor is False
+    assert "contract_number" not in {s.key for s in F.EDITOR_FIELDS}
+
+
+def test_excel_number_populates_the_dedicated_input(app, make_xlsx, base_rows):
+    """Номер из Excel попадает именно в отдельное поле ввода."""
+    app._load_card(str(make_xlsx(base_rows)))
+    assert app.contract_number.get() == "СЛД-0001-2025-М"
+    assert "contract_number" not in app.rows
+
+
+def test_editing_dedicated_input_updates_card_and_validation(
+    app, make_xlsx, base_rows, make_docx
+):
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+    app._load_card(str(make_xlsx(base_rows)))
+    flush(app)
+
+    app.contract_number.set("НОВЫЙ-НОМЕР-2025")
+    flush(app)
+
+    assert app.card.get("contract_number") == "НОВЫЙ-НОМЕР-2025"
+    assert str(app.generate_button["state"]) == "normal"
+
+    app.contract_number.set("")
+    flush(app)
+    assert str(app.generate_button["state"]) == "disabled"
+    assert any(
+        i.field == "contract_number" for i in app.last_validation.errors
+    )
+
+
+def test_generated_document_uses_dedicated_input_value(
+    app, make_xlsx, base_rows, make_docx, tmp_path, monkeypatch
+):
+    """Значение из единственного поля доходит до {contract_number}."""
+    from conftest import docx_text
+
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+    app._load_card(str(make_xlsx(base_rows)))
+    output = tmp_path / "выход"
+    output.mkdir()
+    app.output_dir.set(str(output))
+    app.add_timestamp.set(False)
+    app.contract_number.set("  РУЧНОЙ-42  ")
+    monkeypatch.setattr(
+        "contract_generator.app.messagebox.showinfo", lambda *a, **k: None
+    )
+
+    app._generate()
+
+    assert app.last_output is not None
+    assert "РУЧНОЙ-42" in docx_text(app.last_output)
 
 
 def test_app_has_no_registry_attribute(app):
@@ -224,3 +310,69 @@ def test_settings_saved_on_close(app, tmp_path):
     app.output_dir.set(str(tmp_path))
     app._on_close()
     assert load_settings().output_dir == str(tmp_path)
+
+
+# --- отложенная (debounce) проверка ---------------------------------------
+
+def test_debounce_interval_unchanged():
+    from contract_generator.app import VALIDATION_DEBOUNCE_MS
+
+    assert VALIDATION_DEBOUNCE_MS == 350
+
+
+def test_typing_schedules_a_debounced_job(app, make_xlsx, base_rows):
+    app._load_card(str(make_xlsx(base_rows)))
+    app._cancel_pending_validation()
+    app.rows["inn"].set_value("770708389")
+    assert app._validation_job is not None
+
+
+def test_cancel_pending_validation_clears_the_job(app, make_xlsx, base_rows):
+    app._load_card(str(make_xlsx(base_rows)))
+    app.rows["inn"].set_value("7")
+    app._cancel_pending_validation()
+    assert app._validation_job is None
+
+
+def test_validate_now_runs_immediately_and_cancels_pending(
+    app, make_xlsx, base_rows, make_docx, monkeypatch
+):
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+    app._load_card(str(make_xlsx(base_rows)))
+    monkeypatch.setattr(
+        "contract_generator.app.messagebox.showinfo", lambda *a, **k: None
+    )
+    app.rows["inn"].set_value("")
+    assert app._validation_job is not None
+
+    app._validate_now()
+
+    assert app._validation_job is None
+    assert app.last_validation is not None
+    assert app.last_validation.is_blocked
+
+
+def test_generate_cancels_pending_validation(
+    app, make_xlsx, base_rows, make_docx, monkeypatch
+):
+    app.template_path.set(str(make_docx([FULL_TEMPLATE])))
+    app._load_card(str(make_xlsx(base_rows)))
+    monkeypatch.setattr(
+        "contract_generator.app.messagebox.showerror", lambda *a, **k: None
+    )
+    app.rows["company_name"].set_value("")
+    assert app._validation_job is not None
+
+    app._generate()
+
+    assert app._validation_job is None
+
+
+def test_close_cancels_pending_validation(app, make_xlsx, base_rows):
+    app._load_card(str(make_xlsx(base_rows)))
+    app.rows["inn"].set_value("")
+    assert app._validation_job is not None
+
+    app._on_close()
+
+    assert app._validation_job is None

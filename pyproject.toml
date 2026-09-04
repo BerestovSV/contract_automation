@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contract-generator"
-version = "2.1.0"
+version = "2.0.0"
 description = "Генератор договоров B2B из шаблона Word и карточки компании Excel"
 requires-python = ">=3.11"
 dependencies = [

@@ -208,7 +208,9 @@ class ContractGeneratorApp:
 
         row_index = 1
         for group in F.GROUP_ORDER:
-            specs = F.fields_in_group(group)
+            # Поля, редактируемые отдельными элементами (например, номер
+            # договора), в общую таблицу не попадают.
+            specs = F.fields_in_group(group, editable_only=True)
             if not specs:
                 continue
             ttk.Separator(inner, orient="horizontal").grid(
@@ -384,14 +386,21 @@ class ContractGeneratorApp:
     # -- валидация ---------------------------------------------------------
 
     def _collect_card(self) -> Optional[CompanyCard]:
-        """Собирает данные из формы обратно в карточку."""
+        """Собирает данные из формы обратно в карточку.
+
+        Номер договора редактируется отдельным полем ввода (в таблице строки
+        для него нет), поэтому он записывается явно. Обрезаются только
+        случайные пробелы по краям — формат номера не проверяется.
+        """
         if self.card is None:
             return None
         for key, row in self.rows.items():
-            current = self.card.get(key)
-            if row.value != current:
+            if row.value != self.card.get(key):
                 self.card.set(key, row.value)
-        self.card.set("contract_number", self.contract_number.get())
+
+        number = self.contract_number.get().strip()
+        if number != self.card.get("contract_number"):
+            self.card.set("contract_number", number)
         return self.card
 
     def _on_field_changed(self) -> None:
@@ -421,6 +430,8 @@ class ContractGeneratorApp:
         self._refresh_state()
 
     def _validate_now(self) -> None:
+        """Кнопка «Проверить данные»: немедленная проверка без задержки."""
+        self._cancel_pending_validation()
         self._refresh_state()
         if self.last_validation is not None and not self.last_validation.issues:
             messagebox.showinfo("Проверка", "Проверка пройдена: замечаний нет.")
@@ -583,13 +594,13 @@ class ContractGeneratorApp:
         self.open_doc_button.configure(state=tk.NORMAL)
         self._set_status(f"Договор создан: {output.name}", COLOR_OK)
 
-        summary = report.summary_ru()
-        if report.unknown_placeholders:
-            summary += (
-                "\n\nНеизвестные плейсхолдеры остались в документе без изменений — "
-                "проверьте шаблон."
-            )
-        messagebox.showinfo("Договор создан", f"Файл: {output}\n\n{summary}")
+        # Проверять здесь report.unknown_placeholders не нужно: при любом
+        # неизвестном, пустом или оставшемся плейсхолдере fill_template
+        # возбуждает PlaceholderError и файл не создаётся, поэтому успешный
+        # документ не может содержать незаполненных плейсхолдеров.
+        messagebox.showinfo(
+            "Договор создан", f"Файл: {output}\n\n{report.summary_ru()}"
+        )
 
         if self.open_folder_after.get():
             self._open_output_folder()

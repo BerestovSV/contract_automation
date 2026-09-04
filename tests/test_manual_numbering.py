@@ -117,12 +117,18 @@ def test_whitespace_only_number_blocks(make_xlsx, base_rows, number_template):
     assert validate_card(card, number_template).is_blocked
 
 
-def test_number_not_required_when_template_omits_it(make_xlsx, base_rows, make_docx):
+def test_number_required_even_when_template_omits_it(make_xlsx, base_rows, make_docx):
+    """Номер договора входит в ALWAYS_REQUIRED и обязателен всегда.
+
+    Раньше номер требовался только при наличии {contract_number} в шаблоне;
+    по решению заказчика он обязателен независимо от шаблона.
+    """
     template = make_docx(["ИНН {inn}"])
     card = read_company_card(make_xlsx(base_rows))
     card.set("contract_number", "")
     result = validate_card(card, template)
-    assert not any(i.field == "contract_number" for i in result.errors)
+    assert result.is_blocked
+    assert any(i.field == "contract_number" for i in result.errors)
 
 
 def test_duplicate_numbers_are_allowed(make_xlsx, base_rows, number_template, tmp_path):

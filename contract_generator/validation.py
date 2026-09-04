@@ -18,19 +18,17 @@ from . import language as L
 from . import placeholders as P
 from .models import ERROR, WARNING, ValidationResult
 
-#: Поля, обязательные всегда (независимо от шаблона).
-ALWAYS_REQUIRED = (
+#: Поля, обязательные ВСЕГДА — даже если выбранный шаблон не содержит их
+#: плейсхолдеров. Это правило уровня бизнес-процесса: без наименования
+#: компании, номера и даты договор нельзя оформить и найти.
+ALWAYS_REQUIRED = frozenset({
     "company_name",
-    "inn",
-    "legal_address",
-    "signatory_full",
-    "signatory_position",
-    "based_on",
     "contract_number",
     "contract_date",
-)
+})
 
-#: Банковские поля — обязательны, если шаблон их использует.
+#: Банковские поля — обязательны только если шаблон использует их
+#: плейсхолдеры (см. карту зависимостей в :mod:`placeholders`).
 BANK_FIELDS = ("bank_account", "corr_account", "bank_name", "bik")
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]{2,}$")
@@ -148,20 +146,31 @@ def required_fields_for_template(
 ) -> Set[str]:
     """Поля карточки, обязательные для выбранного шаблона.
 
-    Состав определяется явной картой зависимостей
+    Правило — объединение двух наборов::
+
+        обязательные поля = ALWAYS_REQUIRED | поля, нужные плейсхолдерам шаблона
+
+    Первый набор действует всегда, даже если шаблон не содержит этих
+    плейсхолдеров. Второй определяется явной картой зависимостей
     :data:`~contract_generator.placeholders.PLACEHOLDER_DEPENDENCIES`, а не
     совпадением префиксов: ``{company_name_full}`` требует и ``company_name``,
     и ``ownership_form``, а ``{acting_form}`` — пол подписанта, который вообще
     не является префиксом этого плейсхолдера.
 
-    Без списка плейсхолдеров возвращается базовый набор плюс банковские поля.
+    Например, шаблон с единственным ``{inn}`` требует ``inn`` (из шаблона),
+    а также ``company_name``, ``contract_number`` и ``contract_date``
+    (всегда). Банковские и прочие необязательные поля требуются только тогда,
+    когда шаблон действительно их использует.
+
+    Без списка плейсхолдеров (шаблон ещё не выбран) возвращается
+    :data:`ALWAYS_REQUIRED` плюс банковские поля.
     """
     if template_placeholders is None:
         return set(ALWAYS_REQUIRED) | set(BANK_FIELDS)
 
-    required = P.required_fields_for_placeholders(template_placeholders)
-    # Всегда обязательные поля учитываются, только если шаблон их использует.
-    return required
+    return set(ALWAYS_REQUIRED) | P.required_fields_for_placeholders(
+        template_placeholders
+    )
 
 
 def validate_company_data(
